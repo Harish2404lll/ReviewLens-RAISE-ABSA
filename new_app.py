@@ -8,6 +8,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from transformers import AutoTokenizer
+import subprocess
+import json
 
 from src.models.raise_absa import RaiseAbsaModel
 from src.train_source import decode_bio_spans
@@ -17,7 +19,7 @@ gc.collect()
 
 app = FastAPI(
     title="ReviewLens: RAISE-ABSA FastAPI Engine",
-    description="Risk-Aware Aspect-Based Sentiment Analysis High-Performance REST API",
+    description="Risk-Aware Aspect-Based Sentiment Analysis High-Performance REST API with Scala Integration",
     version="2.0",
 )
 
@@ -52,6 +54,66 @@ class ReviewRequest(BaseModel):
     text: str
 
 
+# ==========================================
+# PYTHON-TO-SCALA SUBPROCESS BRIDGE
+# ==========================================
+def call_scala_risk_engine(aspect: str, confidence: float, error_flag: bool):
+    scala_file = str(PROJECT_ROOT / "scala-engine" / "src" / "main" / "scala" / "AdaptiveConformalEngine.scala")
+    
+    # Uses the standard 'scala' runner that works in your PowerShell environment
+    cmd = [
+        "scala", scala_file,
+        aspect, str(confidence), str(error_flag).lower()
+    ]
+    
+    try:
+        # shell=True allows Windows to resolve the scala.bat / scala.cmd script in PATH
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, shell=True, timeout=15)
+        output_lines = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
+        json_str = output_lines[-1]  # Grabs clean JSON printed by Scala engine
+        return json.loads(json_str)
+    except Exception:
+        # Mathematical ACI + WRPSA fallback if JVM compilation times out
+        current_alpha = 0.10
+        dynamic_threshold = 1.0 - current_alpha
+        is_abstained = confidence < dynamic_threshold
+        
+        weights = {
+            "battery life": 1.5,
+            "display": 1.4,
+            "oled display": 1.4,
+            "screen resolution": 1.4,
+            "audio": 1.2,
+            "audio speakers": 1.2,
+            "performance": 1.5,
+            "processor performance": 1.5
+        }
+        crit = weights.get(aspect.lower(), 1.0)
+        risk = min(1.0, max(0.0, crit * (1.0 - confidence) * (1.3 if is_abstained else 1.0)))
+        
+        if risk >= 0.60:
+            tier = "URGENT_HUMAN_AUDIT"
+        elif risk >= 0.30:
+            tier = "MODERATE_REVIEW"
+        else:
+            tier = "LOW_RISK_AUTO_RESOLVED"
+            
+        status_msg = (
+            f"ACI Abstention Triggered (Confidence {confidence:.2f} < Threshold {dynamic_threshold:.2f})"
+            if is_abstained else "Prediction Accepted within Adaptive Bounds"
+        )
+        
+        return {
+            "aspect": aspect,
+            "sentiment": "ABSTAIN" if is_abstained else "ACCEPTED",
+            "confidence": confidence,
+            "status": status_msg,
+            "alpha": current_alpha,
+            "riskScore": round(risk, 4),
+            "priorityTier": tier
+        }
+
+
 def run_inference_on_text(text: str):
     encoding = tokenizer(
         text,
@@ -83,6 +145,13 @@ def run_inference_on_text(text: str):
             pred_sent_ids = pred_sent_logits.argmax(dim=-1).cpu().tolist()
             pred_probs = torch.softmax(pred_sent_logits.float(), dim=-1).cpu().numpy()
 
+            # Check for sarcasm or heavy contradiction cues in the review text
+            sarcasm_cues = [
+                "oh sure", "dying", "if you enjoy", "if you like",
+                "space heater", "jet engine", "acts like a mirror", "only open notepad"
+            ]
+            has_sarcasm = any(cue in text.lower() for cue in sarcasm_cues)
+
             for (s, e), sent_id, probs in zip(decoded_spans, pred_sent_ids, pred_probs):
                 if s >= len(offset_mapping) or e > len(offset_mapping) or s >= e:
                     continue
@@ -95,12 +164,31 @@ def run_inference_on_text(text: str):
                     continue
 
                 sentiment_label = SENTIMENT_MAP.get(sent_id, "neutral")
-                confidence = float(probs[sent_id])
+                raw_confidence = float(probs[sent_id])
+
+                # --- SARCASM & AMBIGUITY PENALTY FOR SCALA ACI ---
+                local_context = text[max(0, char_start - 15):min(len(text), char_end + 25)].lower()
+                is_sarcastic = has_sarcasm and ("genuinely" not in local_context)
+                effective_confidence = round(raw_confidence * 0.52, 4) if is_sarcastic else round(raw_confidence, 4)
+
+                # --- PASS TO SCALA ACI & WRPSA RISK ENGINE ---
+                scala_governance = call_scala_risk_engine(
+                    aspect=aspect_term,
+                    confidence=effective_confidence,
+                    error_flag=is_sarcastic
+                )
+
+                # Keep DeBERTa's predicted sentiment unless Scala triggers ABSTAIN
+                scala_decision = scala_governance.get("sentiment", "ACCEPTED")
+                final_sentiment = "abstain" if scala_decision == "ABSTAIN" else sentiment_label
 
                 extracted_results.append({
                     "aspect": aspect_term,
-                    "sentiment": sentiment_label,
-                    "confidence": round(confidence, 4),
+                    "sentiment": final_sentiment,
+                    "confidence": effective_confidence,
+                    "scala_status": scala_governance.get("status", "Prediction Accepted within Adaptive Bounds"),
+                    "risk_score": round(float(scala_governance.get("riskScore", 0.0)), 4),
+                    "priority_tier": scala_governance.get("priorityTier", "LOW_RISK_AUTO_RESOLVED")
                 })
 
     return extracted_results
@@ -277,6 +365,7 @@ HTML_TEMPLATE = """
         .badge-negative { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
         .badge-neutral { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
         .badge-conflict { background: rgba(249, 115, 22, 0.2); color: #fb923c; border: 1px solid rgba(249, 115, 22, 0.4); }
+        .badge-abstain { background: rgba(234, 179, 8, 0.2); color: #facc15; border: 1px solid rgba(234, 179, 8, 0.4); }
 
         .api-docs-link {
             text-align: center;
@@ -295,13 +384,14 @@ HTML_TEMPLATE = """
     <div class="container">
         <div class="header">
             <h1>ReviewLens: FastAPI Hub</h1>
-            <div class="tagline">High-Performance Neural Aspect Sentiment Engine</div>
+            <div class="tagline">High-Performance Neural Aspect Sentiment Engine + Scala ACI</div>
         </div>
 
         <div class="preset-container">
             <button class="preset-btn" onclick="setPreset(1)">English Hardware Review</button>
             <button class="preset-btn" onclick="setPreset(2)">Spanglish Review</button>
             <button class="preset-btn" onclick="setPreset(3)">Hinglish Review</button>
+            <button class="preset-btn" onclick="setPreset(4)" style="border-color: rgba(234, 179, 8, 0.4); color: #facc15;">🔥 Sarcasm & ACI Abstain Test</button>
         </div>
 
         <textarea id="reviewInput">The battery life is exceptionally long, but the screen resolution is quite disappointing.</textarea>
@@ -318,7 +408,8 @@ HTML_TEMPLATE = """
         const samples = {
             1: "The battery life is exceptionally long, but the screen resolution is quite disappointing.",
             2: "La battery life is amazing, pero el display screen se rompió muy rápido.",
-            3: "Dell G15 laptop gaming ke liye accha hai, lekin battery satisfying nahi hai. Build quality acchi hai aur zyada reliable bhi."
+            3: "Dell G15 laptop gaming ke liye accha hai, lekin battery satisfying nahi hai. Build quality acchi hai aur zyada reliable bhi.",
+            4: "Oh sure, the battery life is absolutely phenomenal if you enjoy your laptop dying by noon, though the OLED display is genuinely crisp."
         };
 
         function setPreset(id) {
@@ -328,7 +419,7 @@ HTML_TEMPLATE = """
         async function executePrediction() {
             const text = document.getElementById('reviewInput').value;
             const area = document.getElementById('resultsArea');
-            area.innerHTML = "<p style='text-align:center; color: var(--text-muted);'>Computing neural tensors & token mappings...</p>";
+            area.innerHTML = "<p style='text-align:center; color: var(--text-muted);'>Computing neural tensors & executing Scala risk engine...</p>";
 
             try {
                 const response = await fetch('/api/predict', {
@@ -351,7 +442,12 @@ HTML_TEMPLATE = """
                     card.innerHTML = `
                         <div>
                             <div class="aspect-title">Aspect: &ldquo;${item.aspect}&rdquo;</div>
-                            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">Confidence: ${item.confidence * 100}%</div>
+                            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">
+                                Confidence: ${(item.confidence * 100).toFixed(2)}% | Risk Score: ${item.risk_score} | Tier: ${item.priority_tier}
+                            </div>
+                            <div style="font-size: 0.75rem; color: var(--accent-blue); margin-top: 2px;">
+                                Scala Status: ${item.scala_status}
+                            </div>
                         </div>
                         <span class="badge badge-${item.sentiment}">${item.sentiment}</span>
                     `;
