@@ -78,3 +78,55 @@ RAISE-ABSA/
 ├── app.py                        # Streamlit interactive UI dashboard
 ├── requirements-lock.txt         # Project Python dependencies
 └── README.md                     # Project documentation
+
+```
+## ⚙️ Installation & Setup
+
+1. **Clone the Repository:**
+```
+git clone [https://github.com/Harish2404lll/ReviewLens-RAISE-ABSA.git](https://github.com/Harish2404lll/ReviewLens-RAISE-ABSA.git)
+cd ReviewLens-RAISE-ABSA
+```
+
+2. **Create and Activate a Virtual Environment:**
+```
+python -m venv .venv-1
+# On Windows (PowerShell):
+.\.venv-1\Scripts\Activate.ps1
+```
+3. **Install Dependencies:**
+```
+pip install -r requirements-lock.txt
+```
+## 🖥️ Running the Integrated Pipeline
+
+1. **Test the Standalone Scala Risk Engine:**
+```
+scala scala-engine/src/main/scala/AdaptiveConformalEngine.scala
+```
+
+2. **Launch the FastAPI Neural + Scala Hub:**
+```
+python new_app.py
+```
+
+## 📊 Benchmark Results
+
+| Metric | Score / Value |
+| :--- | :--- |
+| **Aspect Span F1-Score** | `0.3543` |
+| **Pair Micro-F1** | `0.2863` |
+| **Conformal Calibration Threshold ($q_{90}$)** | `0.9813` |
+| **Selective Accuracy** | `79.66%` |
+
+
+## 🚀 Future Enhancements
+- [ ] Implement Kafka / Akka streaming ingestion for real-time live e-commerce comment feeds.
+- [ ] Extend Conformal Risk Control calibration curves to support multi-class confidence bounds.
+- [ ] Containerize the full Python + Scala polyglot stack using Docker & Docker Compose.
+
+## 👥 Author & Acknowledgments
+
+- **Harish** — *Lead Developer, Polyglot Architecture & System Integration*  
+  - GitHub: [@Harish2404lll](https://github.com/Harish2404lll)  
+  - Email: [harish24505@gmail.com](mailto:harish24505@gmail.com)
