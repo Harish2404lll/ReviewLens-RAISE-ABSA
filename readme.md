@@ -18,7 +18,8 @@
 5. [Project Directory Structure](#-project-directory-structure)
 6. [Installation & Setup](#️-installation--setup)
 7. [Running the Interactive Web Applications](#-running-the-interactive-web-applications)
-8. [Benchmark Results](#-benchmark-results)
+8. [System Architecture Diagram](#-System-Architecture-Diagram)
+9. [Bendchmark Results](#-benchmark-results)
 
 ---
 
@@ -109,6 +110,8 @@ scala scala-engine/src/main/scala/AdaptiveConformalEngine.scala
 ```
 python new_app.py
 ```
+## 🏗️ System Architecture Diagram
+<img width="6564" height="562" alt="REVIEWLENS — Risk-Aware ABSA Flow Diagram@2x" src="https://github.com/user-attachments/assets/2efec6dc-f162-409c-ac73-67b5590c63cd" />
 
 ## 📊 Benchmark Results
 
